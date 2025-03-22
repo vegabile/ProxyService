@@ -1,5 +1,5 @@
-// simple-batch-proxy.js
-// A minimal proxy server that only handles batch requests
+// batch-proxy-throttled.js
+// Proxy server with request rate limiting
 
 const http = require('http');
 const https = require('https');
@@ -10,6 +10,13 @@ const { URL } = require('url');
 const PORT = process.env.PORT || 3000;
 const ACCESS_KEY = process.env.ACCESS_KEY || 'your-access-key-here'; // Change this!
 const ACCESS_KEY_BUFFER = Buffer.from(ACCESS_KEY);
+
+// Rate limiting configuration
+const CONCURRENT_LIMIT = 5;   // Maximum simultaneous requests
+const DELAY_BETWEEN_REQUESTS = 200; // 200ms between individual requests
+const DELAY_BETWEEN_GROUPS = 1000;  // 1 second between groups of requests
+const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
+const RETRY_DELAY_BASE = 1000;      // Start with 1s delay for retries
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
@@ -81,13 +88,11 @@ async function handleBatchRequest(req, res) {
     return;
   }
   
-  console.log(`Processing ${batchItems.length} batch items`);
+  console.log(`Processing ${batchItems.length} batch items with rate limiting`);
   
-  // Process all requests in parallel
+  // Process all requests with throttling
   try {
-    const results = await Promise.all(
-      batchItems.map(item => processBatchItem(item))
-    );
+    const results = await processThrottledBatch(batchItems);
     
     // Format results by requestId
     const formattedResults = {};
@@ -107,6 +112,66 @@ async function handleBatchRequest(req, res) {
   } catch (err) {
     console.error('Error processing batch:', err);
     sendError(res, 500, 'Server error processing batch');
+  }
+}
+
+// Process batch with rate limiting
+async function processThrottledBatch(batchItems) {
+  const results = [];
+  
+  // Process in small groups to limit concurrent requests
+  for (let i = 0; i < batchItems.length; i += CONCURRENT_LIMIT) {
+    const chunk = batchItems.slice(i, i + CONCURRENT_LIMIT);
+    console.log(`Processing chunk ${i/CONCURRENT_LIMIT + 1} of ${Math.ceil(batchItems.length/CONCURRENT_LIMIT)}`);
+    
+    // Process items within a chunk with staggering
+    const chunkPromises = chunk.map((item, index) => {
+      // Stagger the start time of each request in the group
+      const staggerDelay = index * DELAY_BETWEEN_REQUESTS;
+      return new Promise(resolve => {
+        setTimeout(async () => {
+          const result = await processBatchItemWithRetry(item);
+          resolve(result);
+        }, staggerDelay);
+      });
+    });
+    
+    // Wait for all requests in this chunk to complete
+    const chunkResults = await Promise.all(chunkPromises);
+    results.push(...chunkResults);
+    
+    // Delay between chunks
+    if (i + CONCURRENT_LIMIT < batchItems.length) {
+      console.log(`Waiting ${DELAY_BETWEEN_GROUPS}ms before next chunk`);
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_GROUPS));
+    }
+  }
+  
+  return results;
+}
+
+// Process a batch item with retry logic for rate limiting
+async function processBatchItemWithRetry(item, attempt = 1) {
+  try {
+    const result = await processBatchItem(item);
+    
+    // If we got a 429 (Too Many Requests) status, retry with backoff
+    if (result.status === 429 && attempt <= MAX_RETRIES) {
+      // Exponential backoff
+      const delay = RETRY_DELAY_BASE * Math.pow(2, attempt - 1);
+      console.log(`Rate limited for ${item.requestId}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return processBatchItemWithRetry(item, attempt + 1);
+    }
+    
+    return result;
+  } catch (err) {
+    return {
+      requestId: item.requestId,
+      error: `Processing error: ${err.message}`,
+      status: 500
+    };
   }
 }
 
@@ -252,7 +317,7 @@ function sendError(res, status, message) {
 
 // Start the server
 server.listen(PORT, () => {
-  console.log(`Batch proxy server running on port ${PORT}`);
+  console.log(`Rate-limited batch proxy server running on port ${PORT}`);
 });
 
 // Handle process errors
