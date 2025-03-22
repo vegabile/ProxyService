@@ -167,6 +167,204 @@ const transformEncoded = (proxyRes, res, append) => {
   }
 };
 
+const hostIsAllowed = (host) => {
+  if (!USE_WHITELIST) return true;
+  
+  for (let i = 0; i < ALLOWED_HOSTS.length; i++) {
+    if (host === ALLOWED_HOSTS[i].host) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const processBatchItem = (requestItem, accessKey) => {
+  return new Promise((resolve) => {
+    const { requestId, url } = requestItem;
+    
+    // Create mock request and response objects
+    const mockReq = new http.IncomingMessage(null);
+    const mockRes = new http.ServerResponse({});
+    
+    // Parse the URL to get host and path
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch (e) {
+      resolve({
+        requestId,
+        error: 'Invalid URL',
+        status: 400
+      });
+      return;
+    }
+    
+    // Set up the mock request
+    mockReq.method = requestItem.method || 'GET';
+    mockReq.headers = {
+      'proxy-access-key': accessKey,
+      'proxy-target': parsedUrl.host
+    };
+    
+    // Override method if needed
+    if (requestItem.method && requestItem.method !== 'GET' && requestItem.method !== 'POST') {
+      mockReq.headers['proxy-target-override-method'] = requestItem.method;
+    }
+    
+    // Override protocol if needed
+    if (requestItem.proto) {
+      mockReq.headers['proxy-target-override-proto'] = requestItem.proto;
+    }
+    
+    // Add custom headers if provided
+    if (requestItem.headers) {
+      Object.keys(requestItem.headers).forEach(key => {
+        mockReq.headers[key] = requestItem.headers[key];
+      });
+    }
+    
+    // Capture the response
+    let responseData = Buffer.alloc(0);
+    
+    // Override the write and end methods to capture data
+    mockRes.write = (chunk) => {
+      if (Buffer.isBuffer(chunk)) {
+        responseData = Buffer.concat([responseData, chunk]);
+      } else {
+        responseData = Buffer.concat([responseData, Buffer.from(chunk)]);
+      }
+      return true;
+    };
+    
+    // Handle response completion
+    mockRes.end = (chunk) => {
+      if (chunk) {
+        mockRes.write(chunk);
+      }
+      
+      // Try to parse response as per current format
+      let result;
+      try {
+        const responseText = responseData.toString();
+        const match = responseText.match(/(.*)"""(.+)"""$/s);
+        
+        if (match) {
+          const responseBody = match[1];
+          const metaData = JSON.parse(match[2]);
+          
+          result = {
+            requestId,
+            status: metaData.status.code,
+            headers: metaData.headers,
+            body: responseBody
+          };
+        } else {
+          // No metadata found, return raw response
+          result = {
+            requestId,
+            status: mockRes.statusCode,
+            body: responseText
+          };
+        }
+      } catch (e) {
+        result = {
+          requestId,
+          error: 'Error processing response',
+          status: 500
+        };
+      }
+      
+      resolve(result);
+    };
+    
+    // Handle potential errors
+    mockReq.on('error', (err) => {
+      resolve({
+        requestId,
+        error: `Request error: ${err.message}`,
+        status: 500
+      });
+    });
+    
+    // Process the request using existing proxy logic
+    try {
+      if (hostIsAllowed(parsedUrl.host)) {
+        const proto = requestItem.proto || DEFAULT_PROTO;
+        doProxy(parsedUrl, proto, mockReq, mockRes);
+      } else {
+        resolve({
+          requestId,
+          error: 'Host not whitelisted',
+          status: 400
+        });
+      }
+    } catch (err) {
+      resolve({
+        requestId,
+        error: `Proxy error: ${err.message}`,
+        status: 500
+      });
+    }
+  });
+};
+
+const handleBatchRequest = async (req, res) => {
+  // Check for access key
+  const accessKey = req.headers['proxy-access-key'];
+  if (!accessKey) {
+    writeErr(res, 400, 'proxy-access-key header is required');
+    return;
+  }
+  
+  // Verify access key
+  const accessKeyBuffer = Buffer.from(accessKey);
+  if (accessKeyBuffer.length !== ACCESS_KEY.length || 
+      !crypto.timingSafeEqual(accessKeyBuffer, ACCESS_KEY)) {
+    writeErr(res, 403, 'Invalid access key');
+    return;
+  }
+  
+  // Parse request body to get batch items
+  let batchItems = [];
+  try {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const body = Buffer.concat(chunks).toString();
+    batchItems = JSON.parse(body);
+  } catch (e) {
+    writeErr(res, 400, 'Invalid batch request format');
+    return;
+  }
+  
+  // Validate batch format
+  if (!Array.isArray(batchItems) || batchItems.length === 0) {
+    writeErr(res, 400, 'Batch must be a non-empty array');
+    return;
+  }
+  
+  // Process all batch items in parallel
+  const results = await Promise.all(
+    batchItems.map(item => processBatchItem(item, accessKey))
+  );
+  
+  // Transform results into requested format: { requestId: response }
+  const formattedResults = {};
+  results.forEach(result => {
+    formattedResults[result.requestId] = {
+      status: result.status,
+      headers: result.headers || {},
+      body: result.body || '',
+      error: result.error || null
+    };
+  });
+  
+  // Return the results
+  res.writeHead(200, {'Content-Type': 'application/json'});
+  res.end(JSON.stringify(formattedResults));
+};
+
 const processResponse = (proxyRes, res, append) => {
   if (['transform', 'decode'].includes(GZIP_METHOD) && proxyRes.headers['content-encoding']) {
     transformEncoded(proxyRes, res, append);
@@ -224,6 +422,11 @@ const doProxy = (target, proto, req, res) => {
 };
 
 server.on('request', (req, res) => {
+  if (req.method === 'POST' && req.url === '/batch') {
+    handleBatchRequest(req, res);
+    return;
+  }
+
   const method = req.headers['proxy-target-override-method'];
   if (method) {
     if (ALLOWED_METHODS.includes(method)) {
