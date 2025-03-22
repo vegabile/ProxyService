@@ -290,7 +290,7 @@ const processBatchItem = (requestItem, accessKey) => {
     try {
       if (hostIsAllowed(parsedUrl.host)) {
         const proto = requestItem.proto || DEFAULT_PROTO;
-        doProxy(parsedUrl, proto, mockReq, mockRes);
+        doProxy({host: parsedUrl.host}, proto, mockReq, mockRes);
       } else {
         resolve({
           requestId,
