@@ -4,13 +4,14 @@
   "description": "A controller for proxying requests created for use with HttpService in Roblox.",
   "main": "server.js",
   "dependencies": {
-    "http-proxy": "^1.18.1"
+    "http-proxy": "^1.18.1",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/sentanos/ProxyService.git"
   },
-  "devDependencies": {},
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"

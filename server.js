@@ -1,15 +1,29 @@
 // batch-proxy-throttled.js
 // Proxy server with request rate limiting
 
+require('dotenv').config();
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-// Configuration - set these as environment variables
-const PORT = process.env.PORT || 3000;
-const ACCESS_KEY = process.env.ACCESS_KEY || 'your-access-key-here'; // Change this!
-const ACCESS_KEY_BUFFER = Buffer.from(ACCESS_KEY);
+const HttpProxyAgent = require('http-proxy-agent');
+const HttpsProxyAgent = require('https-proxy-agent');
+
+// 1. Construct the proxy URL
+//    Replace these values with your actual proxy credentials & host
+const proxyUsername = 'user_8543bc,type_residential';
+const proxyPassword = '8cfbeb';
+const proxyHost     = 'portal.anyip.io';
+const proxyPort     = '1080';
+
+// 2. Format the proxy URL (HTTP scheme, even if you plan to make HTTPS requests)
+const proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyPort}`;
+
+const API_LINK = process.env.API_LINK
+
+const httpAgent = new HttpProxyAgent(proxyUrl);
+const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
 // Rate limiting configuration
 const CONCURRENT_LIMIT = 5;   // Maximum simultaneous requests
@@ -254,7 +268,8 @@ function processBatchItem(item) {
       headers: {
         'User-Agent': 'RobloxBatchProxy/1.0',
         'Accept': '*/*'
-      }
+      },
+      agent: parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent
     };
     
     // Add custom headers if provided
