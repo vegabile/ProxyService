@@ -10,18 +10,19 @@ const { URL } = require('url');
 const HttpProxyAgent = require('http-proxy-agent');
 const HttpsProxyAgent = require('https-proxy-agent');
 
-// 1. Construct the proxy URL
-//    Replace these values with your actual proxy credentials & host
+// 1. Construct the proxy URL using Anyip.io proxy server details
 const proxyUsername = 'user_8543bc,type_residential';
 const proxyPassword = '8cfbeb';
 const proxyHost     = 'portal.anyip.io';
 const proxyPort     = '1080';
 
-// 2. Format the proxy URL (HTTP scheme, even if you plan to make HTTPS requests)
+// Format the proxy URL (HTTP scheme, even for HTTPS requests)
 const proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyPort}`;
 
-const API_LINK = process.env.API_LINK
+// Optional: if you need an API_LINK from environment, else leave it as is.
+const API_LINK = process.env.API_LINK;
 
+// Create proxy agents
 const httpAgent = new HttpProxyAgent(proxyUrl);
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
@@ -31,6 +32,13 @@ const DELAY_BETWEEN_REQUESTS = 200; // 200ms between individual requests
 const DELAY_BETWEEN_GROUPS = 1000;  // 1 second between groups of requests
 const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
 const RETRY_DELAY_BASE = 1000;      // Start with 1s delay for retries
+
+// Define the expected access key and create a buffer from it
+const ACCESS_KEY = '301986304d6e36b426a31b70e47684d3a79363a1b6252cab0716d3a7fc7147d1';
+const ACCESS_KEY_BUFFER = Buffer.from(ACCESS_KEY);
+
+// Define PORT variable for Heroku dynamic port assignment (or default to 3000)
+const PORT = process.env.PORT || 3000;
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
@@ -73,7 +81,7 @@ async function handleBatchRequest(req, res) {
     return;
   }
   
-  // Compare access keys
+  // Compare access keys securely
   try {
     const accessKeyBuffer = Buffer.from(accessKey);
     if (accessKeyBuffer.length !== ACCESS_KEY_BUFFER.length || 
@@ -154,7 +162,7 @@ async function processThrottledBatch(batchItems) {
     const chunkResults = await Promise.all(chunkPromises);
     results.push(...chunkResults);
     
-    // Delay between chunks
+    // Delay between chunks if needed
     if (i + CONCURRENT_LIMIT < batchItems.length) {
       console.log(`Waiting ${DELAY_BETWEEN_GROUPS}ms before next chunk`);
       await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_GROUPS));
@@ -256,7 +264,7 @@ function processBatchItem(item) {
       return;
     }
     
-    // Choose protocol module
+    // Choose protocol module based on the URL protocol
     const protocol = parsedUrl.protocol === 'https:' ? https : http;
     
     // Setup request options
@@ -309,7 +317,7 @@ function processBatchItem(item) {
       });
     });
     
-    // Set timeout
+    // Set timeout for the proxy request
     proxyReq.setTimeout(10000, () => {
       proxyReq.destroy();
       resolve({
@@ -338,10 +346,10 @@ server.listen(PORT, () => {
 // Handle process errors
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
-  // Keep the server running despite errors
+  // Optionally, you can add logic to restart or log more details here.
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled promise rejection:', reason);
-  // Keep the server running despite errors
+  // Optionally, add further error handling here.
 });
