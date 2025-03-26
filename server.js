@@ -7,8 +7,8 @@ const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const HttpProxyAgent = require('http-proxy-agent');
-const HttpsProxyAgent = require('https-proxy-agent');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // 1. Construct the proxy URL using Anyip.io proxy server details
 const proxyUsername = 'user_8543bc,type_residential';
