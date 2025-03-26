@@ -23,6 +23,7 @@ const proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyP
 const API_LINK = process.env.API_LINK;
 
 // Create proxy agents
+//test
 const httpAgent = new HttpProxyAgent(proxyUrl);
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
