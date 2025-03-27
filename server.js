@@ -28,7 +28,7 @@ const httpAgent = new HttpProxyAgent(proxyUrl);
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
 // Rate limiting configuration
-const CONCURRENT_LIMIT = 10;   // Maximum simultaneous requests
+const CONCURRENT_LIMIT = 100000000000;   // Maximum simultaneous requests
 const DELAY_BETWEEN_REQUESTS = 0; // 200ms between individual requests
 const DELAY_BETWEEN_GROUPS = 0;  // 1 second between groups of requests
 const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
