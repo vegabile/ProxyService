@@ -298,12 +298,26 @@ function processBatchItem(item) {
       
       proxyRes.on('end', () => {
         const body = Buffer.concat(chunks).toString();
+        let finalBody = body;
+        
+        // If the proxied request is successful, try to add the "requestKey" field
+        if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
+          try {
+            const parsedBody = JSON.parse(body);
+            if (parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
+              parsedBody.requestKey = requestId;
+              finalBody = parsedBody;
+            }
+          } catch (e) {
+            // If the body is not JSON, leave it as is
+          }
+        }
         
         resolve({
           requestId,
           status: proxyRes.statusCode,
           headers: proxyRes.headers,
-          body: body
+          body: finalBody
         });
       });
     });
