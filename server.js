@@ -1,5 +1,6 @@
 // batch-proxy-forgiving.js
-// Proxy server that processes batch requests without blocking on errors
+// Proxy server that processes batch requests and catches ALL errors,
+// so that a proxy error is recorded for that item but does not crash the process.
 
 require('dotenv').config();
 const http = require('http');
@@ -41,19 +42,19 @@ const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, proxy-access-key');
-  
+
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
     return;
   }
-  
+
   if (req.url === '/health') {
     res.writeHead(200, {'Content-Type': 'text/plain'});
     res.end('OK');
     return;
   }
-  
+
   if (req.method === 'POST' && req.url === '/batch') {
     handleBatchRequest(req, res);
   } else {
@@ -64,14 +65,14 @@ const server = http.createServer((req, res) => {
 
 async function handleBatchRequest(req, res) {
   console.log('Received batch request');
-  
+
   // Verify access key
   const accessKey = req.headers['proxy-access-key'];
   if (!accessKey) {
     sendError(res, 400, 'Missing proxy-access-key header');
     return;
   }
-  
+
   try {
     const accessKeyBuffer = Buffer.from(accessKey);
     if (accessKeyBuffer.length !== ACCESS_KEY_BUFFER.length ||
@@ -84,7 +85,7 @@ async function handleBatchRequest(req, res) {
     sendError(res, 500, 'Server error during authentication');
     return;
   }
-  
+
   // Parse request body
   let batchItems = [];
   try {
@@ -98,13 +99,13 @@ async function handleBatchRequest(req, res) {
     sendError(res, 400, 'Invalid request format: ' + err.message);
     return;
   }
-  
+
   console.log(`Processing ${batchItems.length} batch items (forgiving errors)`);
-  
+
   try {
-    // Process items with a concurrency limit; errors are captured per-item
+    // Process items with a concurrency limit; errors are recorded per item
     const results = await processBatchWithLimit(batchItems, 50);
-    
+
     // Format the results by requestId
     const formattedResults = {};
     results.forEach(result => {
@@ -115,7 +116,7 @@ async function handleBatchRequest(req, res) {
         error: result.error || null
       };
     });
-    
+
     res.writeHead(200, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(formattedResults));
   } catch (err) {
@@ -128,127 +129,159 @@ async function handleBatchRequest(req, res) {
 async function processBatchWithLimit(batchItems, maxConcurrency) {
   const results = [];
   let index = 0;
-  
+
   async function worker() {
     while (index < batchItems.length) {
       const currentIndex = index++;
       const item = batchItems[currentIndex];
-      // Process each item without retrying; if it fails, simply record the error and continue.
+      // Each item is processed; any error is caught inside processBatchItem
       const result = await processBatchItem(item);
       results[currentIndex] = result;
     }
   }
-  
+
   const workers = [];
   for (let i = 0; i < Math.min(maxConcurrency, batchItems.length); i++) {
     workers.push(worker());
   }
-  
+
   await Promise.all(workers);
   return results;
 }
 
-// Process a single item; errors are caught and returned in the result object.
+// Process a single item; all errors are caught and result in a resolved error object.
 function processBatchItem(item) {
   return new Promise((resolve) => {
-    const { requestId, url } = item;
-    
-    if (!requestId) {
-      resolve({
-        requestId: 'unknown',
-        error: 'Missing requestId field',
-        status: 400
-      });
-      return;
-    }
-    
-    if (!url) {
-      resolve({
-        requestId,
-        error: 'Missing url field',
-        status: 400
-      });
-      return;
-    }
-    
-    let parsedUrl;
     try {
-      parsedUrl = new URL(url);
-    } catch (e) {
-      resolve({
-        requestId,
-        error: 'Invalid URL: ' + e.message,
-        status: 400
-      });
-      return;
-    }
-    
-    // Choose the correct protocol module and proxy agent
-    const protocol = parsedUrl.protocol === 'https:' ? https : http;
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      method: item.method || 'GET',
-      headers: {
-        'User-Agent': 'RobloxBatchProxy/1.0',
-        'Accept': '*/*'
-      },
-      agent: parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent
-    };
-    
-    console.log(`Proxying request to ${parsedUrl.host}${parsedUrl.pathname}`);
-    
-    const proxyReq = protocol.request(options, (proxyRes) => {
-      const chunks = [];
-      proxyRes.on('data', (chunk) => chunks.push(chunk));
-      proxyRes.on('end', () => {
-        const body = Buffer.concat(chunks).toString();
-        let finalBody = body;
-        if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
+      const { requestId, url } = item;
+
+      if (!requestId) {
+        return resolve({
+          requestId: 'unknown',
+          error: 'Missing requestId field',
+          status: 400
+        });
+      }
+
+      if (!url) {
+        return resolve({
+          requestId,
+          error: 'Missing url field',
+          status: 400
+        });
+      }
+
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url);
+      } catch (e) {
+        return resolve({
+          requestId,
+          error: 'Invalid URL: ' + e.message,
+          status: 400
+        });
+      }
+
+      const protocol = parsedUrl.protocol === 'https:' ? https : http;
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: item.method || 'GET',
+        headers: {
+          'User-Agent': 'RobloxBatchProxy/1.0',
+          'Accept': '*/*'
+        },
+        agent: parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent
+      };
+
+      console.log(`Proxying request to ${parsedUrl.host}${parsedUrl.pathname}`);
+
+      const proxyReq = protocol.request(options, (proxyRes) => {
+        const chunks = [];
+        proxyRes.on('data', (chunk) => {
           try {
-            const parsedBody = JSON.parse(body);
-            if (parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
-              parsedBody.requestKey = requestId;
-              finalBody = parsedBody;
-            }
+            chunks.push(chunk);
           } catch (e) {
-            // Non-JSON body; ignore
+            console.error("Error in data event:", e);
           }
+        });
+        proxyRes.on('end', () => {
+          try {
+            const body = Buffer.concat(chunks).toString();
+            let finalBody = body;
+            if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
+              try {
+                const parsedBody = JSON.parse(body);
+                if (parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
+                  parsedBody.requestKey = requestId;
+                  finalBody = parsedBody;
+                }
+              } catch (e) {
+                // Non-JSON body; ignore
+              }
+            }
+            resolve({
+              requestId,
+              status: proxyRes.statusCode,
+              headers: proxyRes.headers,
+              body: finalBody
+            });
+          } catch (e) {
+            console.error("Error processing response:", e);
+            resolve({
+              requestId,
+              error: "Error processing response: " + e.message,
+              status: 500
+            });
+          }
+        });
+      });
+
+      // Catch errors on the request
+      proxyReq.on('error', (err) => {
+        try {
+          console.error(`Error proxying to ${url}:`, err);
+        } catch (e) {
+          console.error(e);
         }
         resolve({
           requestId,
-          status: proxyRes.statusCode,
-          headers: proxyRes.headers,
-          body: finalBody
+          error: `Proxy error: ${err.message}`,
+          status: 502
         });
       });
-    });
-    
-    proxyReq.on('error', (err) => {
-      console.error(`Error proxying to ${url}:`, err);
-      resolve({
-        requestId,
-        error: `Proxy error: ${err.message}`,
-        status: 502
+
+      // Attach error handler to the underlying socket as well
+      proxyReq.on('socket', (socket) => {
+        socket.on('error', (err) => {
+          console.error(`Socket error for ${url}:`, err);
+          // Do not resolve here; the proxyReq 'error' handler will catch it.
+        });
       });
-    });
-    
-    // Set a shorter timeout to avoid long waits; if exceeded, move on
-    proxyReq.setTimeout(5000, () => {
-      proxyReq.destroy();
-      resolve({
-        requestId,
-        error: 'Request timeout',
-        status: 504
+
+      // Set a shorter timeout to avoid long waits
+      proxyReq.setTimeout(5000, () => {
+        proxyReq.destroy();
+        resolve({
+          requestId,
+          error: 'Request timeout',
+          status: 504
+        });
       });
-    });
-    
-    proxyReq.end();
+
+      proxyReq.end();
+    } catch (ex) {
+      console.error("Caught in processBatchItem outer try-catch:", ex);
+      resolve({
+        requestId: item.requestId || 'unknown',
+        error: "Caught exception: " + ex.message,
+        status: 500
+      });
+    }
   });
 }
 
-// Helper to parse the request body
 function parseRequestBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -279,6 +312,7 @@ server.listen(PORT, () => {
   console.log(`Batch proxy server (forgiving errors) running on port ${PORT}`);
 });
 
+// Catch-all global error handlers
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
 });
