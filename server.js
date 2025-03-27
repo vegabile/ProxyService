@@ -1,5 +1,5 @@
-// batch-proxy-throttled.js
-// Proxy server with request rate limiting
+// batch-proxy-unlimited.js
+// Proxy server without request rate limiting (allows unlimited requests)
 
 require('dotenv').config();
 const http = require('http');
@@ -23,16 +23,12 @@ const proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyP
 const API_LINK = process.env.API_LINK;
 
 // Create proxy agents
-//test
 const httpAgent = new HttpProxyAgent(proxyUrl);
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
-// Rate limiting configuration
-const CONCURRENT_LIMIT = 100000000000;   // Maximum simultaneous requests
-const DELAY_BETWEEN_REQUESTS = 0; // 200ms between individual requests
-const DELAY_BETWEEN_GROUPS = 0;  // 1 second between groups of requests
+// Retry configuration remains unchanged for handling 429 responses
 const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
-const RETRY_DELAY_BASE = 200;      // Start with 1s delay for retries
+const RETRY_DELAY_BASE = 200;       // Base delay for retries (exponential backoff)
 
 // Define the expected access key and create a buffer from it
 const ACCESS_KEY = '301986304d6e36b426a31b70e47684d3a79363a1b6252cab0716d3a7fc7147d1';
@@ -111,11 +107,11 @@ async function handleBatchRequest(req, res) {
     return;
   }
   
-  console.log(`Processing ${batchItems.length} batch items with rate limiting`);
+  console.log(`Processing ${batchItems.length} batch items without rate limiting`);
   
-  // Process all requests with throttling
+  // Process all requests concurrently without throttling
   try {
-    const results = await processThrottledBatch(batchItems);
+    const results = await processBatch(batchItems);
     
     // Format results by requestId
     const formattedResults = {};
@@ -138,42 +134,12 @@ async function handleBatchRequest(req, res) {
   }
 }
 
-// Process batch with rate limiting
-async function processThrottledBatch(batchItems) {
-  const results = [];
-  
-  // Process in small groups to limit concurrent requests
-  for (let i = 0; i < batchItems.length; i += CONCURRENT_LIMIT) {
-    const chunk = batchItems.slice(i, i + CONCURRENT_LIMIT);
-    console.log(`Processing chunk ${i/CONCURRENT_LIMIT + 1} of ${Math.ceil(batchItems.length/CONCURRENT_LIMIT)}`);
-    
-    // Process items within a chunk with staggering
-    const chunkPromises = chunk.map((item, index) => {
-      // Stagger the start time of each request in the group
-      const staggerDelay = index * DELAY_BETWEEN_REQUESTS;
-      return new Promise(resolve => {
-        setTimeout(async () => {
-          const result = await processBatchItemWithRetry(item);
-          resolve(result);
-        }, staggerDelay);
-      });
-    });
-    
-    // Wait for all requests in this chunk to complete
-    const chunkResults = await Promise.all(chunkPromises);
-    results.push(...chunkResults);
-    
-    // Delay between chunks if needed
-    if (i + CONCURRENT_LIMIT < batchItems.length) {
-      console.log(`Waiting ${DELAY_BETWEEN_GROUPS}ms before next chunk`);
-      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_GROUPS));
-    }
-  }
-  
-  return results;
+// Process batch concurrently (no rate limiting)
+async function processBatch(batchItems) {
+  return Promise.all(batchItems.map(item => processBatchItemWithRetry(item)));
 }
 
-// Process a batch item with retry logic for rate limiting
+// Process a batch item with retry logic for rate limiting (retry logic remains intact)
 async function processBatchItemWithRetry(item, attempt = 1) {
   try {
     const result = await processBatchItem(item);
@@ -355,7 +321,7 @@ function sendError(res, status, message) {
 
 // Start the server
 server.listen(PORT, () => {
-  console.log(`Rate-limited batch proxy server running on port ${PORT}`);
+  console.log(`Batch proxy server (unlimited requests) running on port ${PORT}`);
 });
 
 // Handle process errors
