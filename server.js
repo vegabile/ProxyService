@@ -109,7 +109,7 @@ async function handleBatchRequest(req, res) {
   
   console.log(`Processing ${batchItems.length} batch items without rate limiting`);
   
-  // Process all requests concurrently without throttling
+  // Process all requests concurrently without throttling using Promise.allSettled to capture errors individually
   try {
     const results = await processBatch(batchItems);
     
@@ -134,9 +134,24 @@ async function handleBatchRequest(req, res) {
   }
 }
 
-// Process batch concurrently (no rate limiting)
+// Process batch concurrently using Promise.allSettled so one error won't crash the entire process
 async function processBatch(batchItems) {
-  return Promise.all(batchItems.map(item => processBatchItemWithRetry(item)));
+  const settledResults = await Promise.allSettled(
+    batchItems.map(item => processBatchItemWithRetry(item))
+  );
+  // Convert settled promises into results
+  return settledResults.map(result => {
+    if (result.status === 'fulfilled') {
+      return result.value;
+    } else {
+      // If an unexpected error occurred, return a generic error object.
+      return {
+        requestId: 'unknown',
+        error: `Unhandled error: ${result.reason}`,
+        status: 500
+      };
+    }
+  });
 }
 
 // Process a batch item with retry logic for rate limiting (retry logic remains intact)
