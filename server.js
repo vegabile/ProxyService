@@ -28,11 +28,11 @@ const httpAgent = new HttpProxyAgent(proxyUrl);
 const httpsAgent = new HttpsProxyAgent(proxyUrl);
 
 // Rate limiting configuration
-const CONCURRENT_LIMIT = 5;   // Maximum simultaneous requests
-const DELAY_BETWEEN_REQUESTS = 200; // 200ms between individual requests
-const DELAY_BETWEEN_GROUPS = 1000;  // 1 second between groups of requests
+const CONCURRENT_LIMIT = 10;   // Maximum simultaneous requests
+const DELAY_BETWEEN_REQUESTS = 0; // 200ms between individual requests
+const DELAY_BETWEEN_GROUPS = 0;  // 1 second between groups of requests
 const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
-const RETRY_DELAY_BASE = 1000;      // Start with 1s delay for retries
+const RETRY_DELAY_BASE = 200;      // Start with 1s delay for retries
 
 // Define the expected access key and create a buffer from it
 const ACCESS_KEY = '301986304d6e36b426a31b70e47684d3a79363a1b6252cab0716d3a7fc7147d1';
