@@ -1,5 +1,6 @@
 // batch-proxy-unlimited.js
 // Proxy server without request rate limiting (allows unlimited requests)
+// but now with improved concurrency control and keep-alive for performance
 
 require('dotenv').config();
 const http = require('http');
@@ -22,9 +23,16 @@ const proxyUrl = `http://${proxyUsername}:${proxyPassword}@${proxyHost}:${proxyP
 // Optional: if you need an API_LINK from environment, else leave it as is.
 const API_LINK = process.env.API_LINK;
 
-// Create proxy agents
-const httpAgent = new HttpProxyAgent(proxyUrl);
-const httpsAgent = new HttpsProxyAgent(proxyUrl);
+// Enable keep-alive to reuse connections and reduce connection overhead
+const proxyAgentOptions = {
+  keepAlive: true,
+  // Optionally, you can set maxSockets, maxFreeSockets, etc.
+  maxSockets: 50
+};
+
+// Create proxy agents using the proxy URL and agent options
+const httpAgent = new HttpProxyAgent(proxyUrl, proxyAgentOptions);
+const httpsAgent = new HttpsProxyAgent(proxyUrl, proxyAgentOptions);
 
 // Retry configuration remains unchanged for handling 429 responses
 const MAX_RETRIES = 3;              // Retry up to 3 times on 429 responses
@@ -109,9 +117,9 @@ async function handleBatchRequest(req, res) {
   
   console.log(`Processing ${batchItems.length} batch items without rate limiting`);
   
-  // Process all requests concurrently without throttling using Promise.allSettled to capture errors individually
+  // Process requests using a concurrency limit to prevent resource exhaustion
   try {
-    const results = await processBatch(batchItems);
+    const results = await processBatchWithLimit(batchItems, 50); // limit to 50 concurrent requests
     
     // Format results by requestId
     const formattedResults = {};
@@ -134,24 +142,30 @@ async function handleBatchRequest(req, res) {
   }
 }
 
-// Process batch concurrently using Promise.allSettled so one error won't crash the entire process
-async function processBatch(batchItems) {
-  const settledResults = await Promise.allSettled(
-    batchItems.map(item => processBatchItemWithRetry(item))
-  );
-  // Convert settled promises into results
-  return settledResults.map(result => {
-    if (result.status === 'fulfilled') {
-      return result.value;
-    } else {
-      // If an unexpected error occurred, return a generic error object.
-      return {
-        requestId: 'unknown',
-        error: `Unhandled error: ${result.reason}`,
-        status: 500
-      };
+// Process batch items with a maximum concurrency limit
+async function processBatchWithLimit(batchItems, maxConcurrency) {
+  const results = [];
+  let index = 0;
+  
+  async function worker() {
+    while (index < batchItems.length) {
+      // Get the current item and increment the shared index
+      const currentIndex = index++;
+      const item = batchItems[currentIndex];
+      // Process with retry logic
+      const result = await processBatchItemWithRetry(item);
+      results[currentIndex] = result;
     }
-  });
+  }
+  
+  // Start a number of workers up to maxConcurrency
+  const workers = [];
+  for (let i = 0; i < Math.min(maxConcurrency, batchItems.length); i++) {
+    workers.push(worker());
+  }
+  
+  await Promise.all(workers);
+  return results;
 }
 
 // Process a batch item with retry logic for rate limiting (retry logic remains intact)
@@ -259,6 +273,7 @@ function processBatchItem(item) {
         'User-Agent': 'RobloxBatchProxy/1.0',
         'Accept': '*/*'
       },
+      // Use the appropriate proxy agent with keep-alive enabled
       agent: parsedUrl.protocol === 'https:' ? httpsAgent : httpAgent
     };
     
